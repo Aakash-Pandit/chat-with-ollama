@@ -46,7 +46,7 @@ async def health_check():
 
 
 def ollama_request(prompt: str, stream: bool = False):
-    ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
+    ollama_url = os.getenv("OLLAMA_HOST", "http://ollama:11434")
     return requests.post(
         f"{ollama_url}/api/generate",
         json={"model": "phi3", "prompt": prompt, "stream": stream},
