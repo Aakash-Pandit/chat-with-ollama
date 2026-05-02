@@ -1,11 +1,11 @@
+import json
 import logging
 import os
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-
-import requests
 
 from application.models.schemas import (
     HealthResponse,
@@ -29,6 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
+
 
 @app.get("/", include_in_schema=False)
 async def root():
@@ -40,35 +42,34 @@ async def root():
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    return HealthResponse(
-        status="healthy",
-    )
+    return HealthResponse(status="healthy")
 
 
-def ollama_request(prompt: str, stream: bool = False):
-    ollama_url = os.getenv("OLLAMA_HOST", "http://ollama:11434")
-    return requests.post(
-        f"{ollama_url}/api/generate",
-        json={"model": "phi3", "prompt": prompt, "stream": stream},
-        stream=stream,
-    )
-
-
-def stream_llm(prompt: str):
-    response = ollama_request(prompt, stream=True)
-    for line in response.iter_lines():
-        if line:
-            yield line.decode() + "\n"
+async def stream_llm(prompt: str):
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            f"{OLLAMA_HOST}/api/generate",
+            json={"model": "phi3", "prompt": prompt, "stream": True},
+        ) as response:
+            async for line in response.aiter_lines():
+                if line:
+                    chunk = json.loads(line)
+                    yield chunk.get("response", "")
 
 
 @app.post("/stream")
-def stream(request: ChatRequest):
+async def stream(request: ChatRequest):
     return StreamingResponse(stream_llm(request.query), media_type="text/plain")
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
-    response = ollama_request(request.query)
+async def chat(request: ChatRequest):
+    async with httpx.AsyncClient(timeout=None) as client:
+        response = await client.post(
+            f"{OLLAMA_HOST}/api/generate",
+            json={"model": "phi3", "prompt": request.query, "stream": False},
+        )
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return ChatResponse(query=request.query, answer=response.json()["response"])
