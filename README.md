@@ -1,6 +1,6 @@
 # Chat with Ollama
 
-A lightweight REST API that lets you chat with a locally running LLM (phi3) using [Ollama](https://ollama.com), wrapped in a FastAPI service and fully containerized with Docker.
+A lightweight REST API to chat with a locally running LLM using [Ollama](https://ollama.com), built with FastAPI and fully containerized with Docker.
 
 ---
 
@@ -19,19 +19,7 @@ This project provides a simple HTTP API to interact with a large language model 
 
 ---
 
-## How Ollama Works
-
-[Ollama](https://ollama.com) is a tool that runs open-source LLMs locally. It:
-
-1. Downloads and manages model weights on your machine
-2. Exposes a local HTTP API at `http://localhost:11434`
-3. Handles inference — you send a prompt, it returns a response
-
-Models are stored in a Docker volume and only downloaded once.
-
----
-
-## How We Use Ollama in This Project
+## Architecture
 
 ```
 User Request
@@ -40,19 +28,32 @@ User Request
 FastAPI (/chat or /stream)
      │
      ▼
-ollama_request() → POST http://ollama:11434/api/generate
+httpx async client → POST http://ollama:11434/api/generate
      │
      ▼
 Ollama container (phi3 model)
      │
      ▼
-Response returned to user
+Response streamed or returned to user
 ```
 
-- `/chat` — returns the full response once generation is complete
-- `/stream` — streams tokens back to the client in real-time as they are generated
+- `/chat` — waits for full generation, returns complete response as JSON
+- `/stream` — streams plain text tokens back to the client in real-time as they are generated
 
-The `ollama-init` service automatically pulls the `phi3` model on first startup so you don't have to do it manually.
+The `ollama-init` service automatically pulls the `phi3` model on first startup.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| API framework | FastAPI |
+| HTTP client | httpx (async) |
+| LLM runtime | Ollama |
+| Model | phi3 (swappable via `OLLAMA_MODEL` env var) |
+| Containerization | Docker + Docker Compose |
+| Data validation | Pydantic v2 |
 
 ---
 
@@ -78,27 +79,23 @@ cd chat-with-ollama
 cp .env.example .env
 ```
 
-The default `.env` should contain:
+Default `.env` values:
 
 ```env
+API_PORT=8000
 OLLAMA_HOST=http://ollama:11434
 ```
 
-### 3. Build the project
+### 3. Build and start
 
 ```bash
 make build
-```
-
-### 4. Start the project
-
-```bash
 make start
 ```
 
-On first run, the `ollama-init` service will automatically pull the `phi3` model (~2.2 GB). Subsequent starts skip the download as the model is cached in a Docker volume.
+On first run, `ollama-init` automatically pulls the `phi3` model (~2.2 GB). Subsequent starts skip the download as the model is cached in a Docker volume.
 
-### 5. Verify it's running
+### 4. Verify it's running
 
 ```bash
 curl http://localhost:8000/health
@@ -109,8 +106,18 @@ curl http://localhost:8000/health
 
 ## API Endpoints
 
+### `GET /health`
+Returns service health status.
+
+**Response:**
+```json
+{"status": "healthy"}
+```
+
+---
+
 ### `POST /chat`
-Returns the full response after generation completes.
+Sends a prompt and returns the full response once generation is complete.
 
 **Request:**
 ```json
@@ -128,32 +135,85 @@ Returns the full response after generation completes.
 ---
 
 ### `POST /stream`
-Streams tokens in real-time as the model generates them.
+Streams plain text tokens in real-time as the model generates them.
 
 **Request:**
 ```json
 {"query": "Tell me a joke"}
 ```
 
-**Response:** newline-delimited JSON chunks
-```json
-{"model":"phi3","response":"Why","done":false}
-{"model":"phi3","response":" don't","done":false}
-...
-{"model":"phi3","response":"","done":true}
+**Response:** plain text, tokens arriving incrementally
 ```
+Why don't scientists trust atoms?
+Because they make up everything!
+```
+
+**Test with curl:**
+```bash
+curl -X POST http://localhost:8000/stream \
+  -H "Content-Type: application/json" \
+  -d '{"query": "tell me about space"}' \
+  --no-buffer
+```
+
+> Note: Swagger UI (`/docs`) and Postman will display the full response after generation completes — they do not show tokens arriving one by one. Use `curl` or a frontend with `fetch` + `ReadableStream` to observe real-time streaming.
 
 ---
 
 ## Makefile Commands
 
 | Command | Description |
-|---------|-------------|
+|---|---|
 | `make build` | Build the Docker image |
 | `make start` | Start all services |
 | `make stop` | Stop all services |
 | `make remove` | Stop and remove containers and volumes |
 | `make rebuild` | Stop, rebuild, and restart |
+| `make test` | Run tests inside the container |
+
+---
+
+## Project Structure
+
+```
+chat-with-ollama/
+├── application/
+│   ├── app.py               # FastAPI app, route handlers
+│   └── models/
+│       └── schemas.py       # Pydantic request/response schemas
+├── compose/
+│   └── Dockerfile           # Container definition
+├── docker-compose.yml       # Service orchestration
+├── main.py                  # Uvicorn entry point
+├── Makefile                 # Common dev commands
+├── requirements.txt         # Python dependencies
+└── .env.example             # Environment variable template
+```
+
+---
+
+## Swapping the Model
+
+To use a different Ollama model (e.g. `qwen2.5-coder:7b` for code tasks):
+
+1. Update `docker-compose.yml` to pull the new model:
+```yaml
+entrypoint: ["ollama", "pull", "qwen2.5-coder:7b"]
+```
+
+2. Set the model via environment variable in `.env`:
+```env
+OLLAMA_MODEL=qwen2.5-coder:7b
+```
+
+Popular alternatives:
+
+| Model | Size | Good for |
+|---|---|---|
+| `phi3` | ~2.3 GB | General chat (default) |
+| `qwen2.5-coder:7b` | ~4.7 GB | Code review, code generation |
+| `deepseek-coder:6.7b` | ~3.8 GB | Bug detection, security review |
+| `codellama:7b` | ~3.8 GB | General code tasks |
 
 ---
 
